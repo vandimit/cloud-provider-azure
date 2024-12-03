@@ -26,6 +26,7 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
 
+	"k8s.io/apimachinery/pkg/types"
 	cloudprovider "k8s.io/cloud-provider"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/pointer"
@@ -90,9 +91,8 @@ func (fs *FlexScaleSet) newVmssFlexVMCache() (azcache.Resource, error) {
 			vm := vms[i]
 			if vm.OsProfile != nil && vm.OsProfile.ComputerName != nil {
 				localCache.Store(strings.ToLower(*vm.OsProfile.ComputerName), &vm)
-				fs.vmssFlexVMNameToVmssID.Store(strings.ToLower(*vm.OsProfile.ComputerName), key)
-				fs.vmssFlexVMNameToNodeName.Store(*vm.Name, strings.ToLower(*vm.OsProfile.ComputerName))
 			}
+			fs.cacheVirtualMachine(ctx, vm)
 		}
 
 		vms, rerr = fs.VirtualMachinesClient.ListVmssFlexVMsWithOnlyInstanceView(ctx, key)
@@ -135,25 +135,15 @@ func (fs *FlexScaleSet) getNodeNameByVMName(ctx context.Context, vmName string) 
 	}
 
 	getter := func(ctx context.Context, vmName string, crt azcache.AzureCacheReadType) (string, error) {
-		cached, err := fs.vmssFlexCache.Get(ctx, consts.VmssFlexKey, crt)
+		vm, err := fs.getVmssFlexVMByVMName(ctx, vmName, crt)
 		if err != nil {
 			return "", err
 		}
-		vmssFlexes := cached.(*sync.Map)
 
-		vmssFlexes.Range(func(key, _ interface{}) bool {
-			vmssFlexID := key.(string)
-			_, err := fs.vmssFlexVMCache.Get(ctx, vmssFlexID, azcache.CacheReadTypeForceRefresh)
-			if err != nil {
-				klog.Errorf("failed to refresh vmss flex VM cache for vmssFlexID %s", vmssFlexID)
-			}
-			return true
-		})
-
-		cachedNodeName, isCached = fs.vmssFlexVMNameToNodeName.Load(vmName)
-		if isCached {
-			return fmt.Sprintf("%v", cachedNodeName), nil
+		if vm.OsProfile != nil && vm.OsProfile.ComputerName != nil {
+			return strings.ToLower(*vm.OsProfile.ComputerName), nil
 		}
+
 		return "", cloudprovider.InstanceNotFound
 	}
 
@@ -169,7 +159,7 @@ func (fs *FlexScaleSet) getNodeNameByVMName(ctx context.Context, vmName string) 
 func (fs *FlexScaleSet) getNodeVmssFlexID(ctx context.Context, nodeName string) (string, error) {
 	fs.lockMap.LockEntry(consts.GetNodeVmssFlexIDLockKey)
 	defer fs.lockMap.UnlockEntry(consts.GetNodeVmssFlexIDLockKey)
-	cachedVmssFlexID, isCached := fs.vmssFlexVMNameToVmssID.Load(nodeName)
+	cachedVmssFlexID, isCached := fs.vmssFlexNodeNameToVmssID.Load(nodeName)
 
 	if isCached {
 		return fmt.Sprintf("%v", cachedVmssFlexID), nil
@@ -205,9 +195,10 @@ func (fs *FlexScaleSet) getNodeVmssFlexID(ctx context.Context, nodeName string) 
 		for _, vmssID := range vmssFlexIDs {
 			if _, err := fs.vmssFlexVMCache.Get(ctx, vmssID, azcache.CacheReadTypeForceRefresh); err != nil {
 				klog.Errorf("failed to refresh vmss flex VM cache for vmssFlexID %s", vmssID)
+				return "", err
 			}
 			// if the vm is cached stop refreshing
-			cachedVmssFlexID, isCached = fs.vmssFlexVMNameToVmssID.Load(nodeName)
+			cachedVmssFlexID, isCached = fs.vmssFlexNodeNameToVmssID.Load(nodeName)
 			if isCached {
 				return fmt.Sprintf("%v", cachedVmssFlexID), nil
 			}
@@ -225,6 +216,11 @@ func (fs *FlexScaleSet) getNodeVmssFlexID(ctx context.Context, nodeName string) 
 }
 
 func (fs *FlexScaleSet) getVmssFlexVM(ctx context.Context, nodeName string, crt azcache.AzureCacheReadType) (vm compute.VirtualMachine, err error) {
+	cachedVMName, isCached := fs.vmssFlexNodeNameToVMName.Load(nodeName)
+	if isCached {
+		return fs.getVmssFlexVMByVMName(ctx, cachedVMName.(string), crt)
+	}
+
 	vmssFlexID, err := fs.getNodeVmssFlexID(ctx, nodeName)
 	if err != nil {
 		return vm, err
@@ -332,6 +328,25 @@ func (fs *FlexScaleSet) getVmssFlexByName(ctx context.Context, vmssFlexName stri
 	return nil, cloudprovider.InstanceNotFound
 }
 
+func (fs *FlexScaleSet) getVmssFlexVMByVMName(ctx context.Context, vmName string, crt azcache.AzureCacheReadType) (compute.VirtualMachine, error) {
+	vm, err := fs.getVirtualMachine(ctx, types.NodeName(vmName), crt)
+	if err != nil {
+		return compute.VirtualMachine{}, err
+	}
+	fs.cacheVirtualMachine(ctx, vm)
+	return vm, nil
+}
+
+func (fs *FlexScaleSet) cacheVirtualMachine(ctx context.Context, vm compute.VirtualMachine) {
+	if vm.OsProfile != nil && vm.OsProfile.ComputerName != nil {
+		fs.vmssFlexVMNameToNodeName.Store(*vm.Name, strings.ToLower(*vm.OsProfile.ComputerName))
+		fs.vmssFlexNodeNameToVMName.Store(strings.ToLower(*vm.OsProfile.ComputerName), *vm.Name)
+		if vm.VirtualMachineScaleSet != nil && vm.VirtualMachineScaleSet.ID != nil {
+			fs.vmssFlexNodeNameToVmssID.Store(strings.ToLower(*vm.OsProfile.ComputerName), *vm.VirtualMachineScaleSet.ID)
+		}
+	}
+}
+
 func (fs *FlexScaleSet) DeleteCacheForNode(ctx context.Context, nodeName string) error {
 	if fs.Config.DisableAPICallCache {
 		return nil
@@ -344,21 +359,25 @@ func (fs *FlexScaleSet) DeleteCacheForNode(ctx context.Context, nodeName string)
 
 	fs.lockMap.LockEntry(vmssFlexID)
 	defer fs.lockMap.UnlockEntry(vmssFlexID)
-	cached, err := fs.vmssFlexVMCache.Get(ctx, vmssFlexID, azcache.CacheReadTypeDefault)
+	cached, err := fs.vmssFlexVMCache.Get(ctx, vmssFlexID, azcache.CacheReadTypeNoRefresh)
 	if err != nil {
 		klog.Errorf("vmssFlexVMCache.Get(%s, %s) failed with %v", vmssFlexID, nodeName, err)
 		return err
 	}
-	if cached == nil {
-		err := fmt.Errorf("nil cache returned from %s", vmssFlexID)
-		klog.Errorf("DeleteCacheForNode(%s, %s) failed with %v", vmssFlexID, nodeName, err)
-		return err
+	if cached != nil {
+		vmMap := cached.(*sync.Map)
+		vmMap.Delete(nodeName)
+		fs.vmssFlexVMCache.Update(vmssFlexID, vmMap)
 	}
-	vmMap := cached.(*sync.Map)
-	vmMap.Delete(nodeName)
 
-	fs.vmssFlexVMCache.Update(vmssFlexID, vmMap)
-	fs.vmssFlexVMNameToVmssID.Delete(nodeName)
+	cachedVMName, isCached := fs.vmssFlexNodeNameToVMName.Load(nodeName)
+	if isCached {
+		vmName := cachedVMName.(string)
+		fs.vmssFlexVMNameToNodeName.Delete(vmName)
+	}
+
+	fs.vmssFlexNodeNameToVmssID.Delete(nodeName)
+	fs.vmssFlexNodeNameToVMName.Delete(nodeName)
 
 	klog.V(2).Infof("DeleteCacheForNode(%s, %s) successfully", vmssFlexID, nodeName)
 	return nil

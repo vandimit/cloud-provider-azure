@@ -232,15 +232,17 @@ func TestGetNodeNameByVMName(t *testing.T) {
 	testCases := []struct {
 		description                    string
 		vmName                         string
+		testVM                         compute.VirtualMachine
 		testVMListWithoutInstanceView  []compute.VirtualMachine
 		testVMListWithOnlyInstanceView []compute.VirtualMachine
-		vmListErr                      error
+		vmListErr                      *retry.Error
 		expectedNodeName               string
 		expectedErr                    error
 	}{
 		{
 			description:                    "getNodeNameByVMName should return the nodeName of the corresponding vm by the vm name",
 			vmName:                         "testvm1",
+			testVM:                         testVM1,
 			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
 			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
 			vmListErr:                      nil,
@@ -250,11 +252,15 @@ func TestGetNodeNameByVMName(t *testing.T) {
 		{
 			description:                    "getNodeVmssFlexID should throw InstanceNotFound error if the VM cannot be found",
 			vmName:                         nonExistingNodeName,
+			testVM:                         compute.VirtualMachine{},
 			testVMListWithoutInstanceView:  []compute.VirtualMachine{},
 			testVMListWithOnlyInstanceView: []compute.VirtualMachine{},
-			vmListErr:                      nil,
-			expectedNodeName:               "",
-			expectedErr:                    cloudprovider.InstanceNotFound,
+			vmListErr: &retry.Error{
+				HTTPStatusCode: http.StatusNotFound,
+				RawError:       cloudprovider.InstanceNotFound,
+			},
+			expectedNodeName: "",
+			expectedErr:      cloudprovider.InstanceNotFound,
 		},
 	}
 
@@ -266,6 +272,7 @@ func TestGetNodeNameByVMName(t *testing.T) {
 		mockVMSSClient.EXPECT().List(gomock.Any(), gomock.Any()).Return(testVmssFlexList, nil).AnyTimes()
 
 		mockVMClient := fs.VirtualMachinesClient.(*mockvmclient.MockInterface)
+		mockVMClient.EXPECT().Get(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(tc.testVM, tc.vmListErr).AnyTimes()
 		mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), gomock.Any()).Return(tc.testVMListWithoutInstanceView, tc.vmListErr).AnyTimes()
 		mockVMClient.EXPECT().ListVmssFlexVMsWithOnlyInstanceView(gomock.Any(), gomock.Any()).Return(tc.testVMListWithOnlyInstanceView, tc.vmListErr).AnyTimes()
 
