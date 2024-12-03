@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	mockvmclientv2 "sigs.k8s.io/cloud-provider-azure/pkg/azureclients/v2/vmclient/mockvmclient"
 	"testing"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v6"
@@ -45,55 +46,50 @@ func TestAttachDiskWithVmssFlex(t *testing.T) {
 	defer cancel()
 
 	testCases := []struct {
-		description                    string
-		nodeName                       types.NodeName
-		vmName                         string
-		inconsistentLUN                bool
-		testVMListWithoutInstanceView  []compute.VirtualMachine
-		testVMListWithOnlyInstanceView []compute.VirtualMachine
-		vmListErr                      error
-		vmssFlexVMUpdateError          *retry.Error
-		expectedErr                    error
+		description           string
+		nodeName              types.NodeName
+		vmName                string
+		inconsistentLUN       bool
+		testVM                compute.VirtualMachine
+		vmGetError            *retry.Error
+		vmssFlexVMUpdateError *retry.Error
+		expectedErr           error
 	}{
 		{
-			description:                    "AttachDisk should work as expected with managed disk",
-			nodeName:                       types.NodeName(testVM1Spec.ComputerName),
-			vmName:                         testVM1Spec.VMName,
-			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
-			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
-			vmListErr:                      nil,
-			vmssFlexVMUpdateError:          nil,
-			expectedErr:                    nil,
+			description:           "AttachDisk should work as expected with managed disk",
+			nodeName:              types.NodeName(testVM1Spec.ComputerName),
+			vmName:                testVM1Spec.VMName,
+			testVM:                testVM1,
+			vmGetError:            nil,
+			vmssFlexVMUpdateError: nil,
+			expectedErr:           nil,
 		},
 		{
-			description:                    "AttachDisk should should throw InstanceNotFound error if the VM cannot be found",
-			nodeName:                       types.NodeName(nonExistingNodeName),
-			testVMListWithoutInstanceView:  []compute.VirtualMachine{},
-			testVMListWithOnlyInstanceView: []compute.VirtualMachine{},
-			vmListErr:                      nil,
-			vmssFlexVMUpdateError:          nil,
-			expectedErr:                    cloudprovider.InstanceNotFound,
+			description:           "AttachDisk should should throw InstanceNotFound error if the VM cannot be found",
+			nodeName:              types.NodeName(nonExistingNodeName),
+			testVM:                compute.VirtualMachine{},
+			vmGetError:            &retry.Error{HTTPStatusCode: http.StatusNotFound, RawError: cloudprovider.InstanceNotFound},
+			vmssFlexVMUpdateError: nil,
+			expectedErr:           cloudprovider.InstanceNotFound,
 		},
 		{
-			description:                    "AttachDisk should return error if update VM fails",
-			nodeName:                       types.NodeName(testVM1Spec.ComputerName),
-			vmName:                         testVM1Spec.VMName,
-			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
-			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
-			vmListErr:                      nil,
-			vmssFlexVMUpdateError:          &retry.Error{HTTPStatusCode: http.StatusNotFound, RawError: cloudprovider.InstanceNotFound},
-			expectedErr:                    fmt.Errorf("Retriable: false, RetryAfter: 0s, HTTPStatusCode: 404, RawError: instance not found"),
+			description:           "AttachDisk should return error if update VM fails",
+			nodeName:              types.NodeName(testVM1Spec.ComputerName),
+			vmName:                testVM1Spec.VMName,
+			testVM:                testVM1,
+			vmGetError:            nil,
+			vmssFlexVMUpdateError: &retry.Error{HTTPStatusCode: http.StatusNotFound, RawError: cloudprovider.InstanceNotFound},
+			expectedErr:           fmt.Errorf("Retriable: false, RetryAfter: 0s, HTTPStatusCode: 404, RawError: instance not found"),
 		},
 		{
-			description:                    "error should be returned when disk lun is inconsistent",
-			nodeName:                       types.NodeName(testVM1Spec.ComputerName),
-			vmName:                         testVM1Spec.VMName,
-			inconsistentLUN:                true,
-			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
-			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
-			vmListErr:                      nil,
-			vmssFlexVMUpdateError:          nil,
-			expectedErr:                    fmt.Errorf("disk(uri) already attached to node(vmssflex1000001) on LUN(1), but target LUN is 63"),
+			description:           "error should be returned when disk lun is inconsistent",
+			nodeName:              types.NodeName(testVM1Spec.ComputerName),
+			vmName:                testVM1Spec.VMName,
+			inconsistentLUN:       true,
+			testVM:                testVM1,
+			vmGetError:            nil,
+			vmssFlexVMUpdateError: nil,
+			expectedErr:           fmt.Errorf("disk(uri) already attached to node(vmssflex1000001) on LUN(1), but target LUN is 63"),
 		},
 	}
 
@@ -105,8 +101,9 @@ func TestAttachDiskWithVmssFlex(t *testing.T) {
 		mockVMSSClient.EXPECT().List(gomock.Any(), gomock.Any()).Return(testVmssFlexList, nil).AnyTimes()
 
 		mockVMClient := fs.VirtualMachinesClient.(*mockvmclient.MockInterface)
-		mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), gomock.Any()).Return(tc.testVMListWithoutInstanceView, tc.vmListErr).AnyTimes()
-		mockVMClient.EXPECT().ListVmssFlexVMsWithOnlyInstanceView(gomock.Any(), gomock.Any()).Return(tc.testVMListWithOnlyInstanceView, tc.vmListErr).AnyTimes()
+		mockVMClient.EXPECT().Get(gomock.Any(), gomock.Any(), tc.vmName, gomock.Any()).Return(tc.testVM, tc.vmGetError).AnyTimes()
+		mockVMClientV2 := fs.VirtualMachinesClientV2.(*mockvmclientv2.MockInterface)
+		mockVMClientV2.EXPECT().GetVMNameByComputerName(gomock.Any(), gomock.Any(), gomock.Any()).Return(tc.vmName, tc.vmGetError).AnyTimes()
 
 		mockVMClient.EXPECT().UpdateAsync(gomock.Any(), gomock.Any(), tc.vmName, gomock.Any(), gomock.Any()).Return(nil, tc.vmssFlexVMUpdateError).AnyTimes()
 		mockVMClient.EXPECT().WaitForUpdateResult(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, tc.vmssFlexVMUpdateError).AnyTimes()
@@ -140,71 +137,65 @@ func TestDettachDiskWithVmssFlex(t *testing.T) {
 	defer cancel()
 
 	testCases := []struct {
-		description                    string
-		nodeName                       types.NodeName
-		vmName                         string
-		testVMListWithoutInstanceView  []compute.VirtualMachine
-		testVMListWithOnlyInstanceView []compute.VirtualMachine
-		forceDetach                    bool
-		vmListErr                      error
-		vmssFlexVMUpdateError          *retry.Error
-		diskMap                        map[string]string
-		expectedErr                    error
+		description           string
+		nodeName              types.NodeName
+		vmName                string
+		testVM                compute.VirtualMachine
+		forceDetach           bool
+		vmGetErr              *retry.Error
+		vmssFlexVMUpdateError *retry.Error
+		diskMap               map[string]string
+		expectedErr           error
 	}{
 		{
-			description:                    "DetachDisk should work as expected with managed disk",
-			nodeName:                       types.NodeName(testVM1Spec.ComputerName),
-			vmName:                         testVM1Spec.VMName,
-			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
-			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
-			vmListErr:                      nil,
-			vmssFlexVMUpdateError:          nil,
-			diskMap:                        map[string]string{"diskUri1": "dataDisktestvm1"},
-			expectedErr:                    nil,
+			description:           "DetachDisk should work as expected with managed disk",
+			nodeName:              types.NodeName(testVM1Spec.ComputerName),
+			vmName:                testVM1Spec.VMName,
+			testVM:                testVM1,
+			vmGetErr:              nil,
+			vmssFlexVMUpdateError: nil,
+			diskMap:               map[string]string{"diskUri1": "dataDisktestvm1"},
+			expectedErr:           nil,
 		},
 		{
-			description:                    "DetachDisk should work as expected with managed disk with forceDetach",
-			nodeName:                       types.NodeName(testVM1Spec.ComputerName),
-			vmName:                         testVM1Spec.VMName,
-			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
-			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
-			forceDetach:                    true,
-			vmListErr:                      nil,
-			vmssFlexVMUpdateError:          nil,
-			diskMap:                        map[string]string{"diskUri1": "dataDisktestvm1"},
-			expectedErr:                    nil,
+			description:           "DetachDisk should work as expected with managed disk with forceDetach",
+			nodeName:              types.NodeName(testVM1Spec.ComputerName),
+			vmName:                testVM1Spec.VMName,
+			testVM:                testVM1,
+			forceDetach:           true,
+			vmGetErr:              nil,
+			vmssFlexVMUpdateError: nil,
+			diskMap:               map[string]string{"diskUri1": "dataDisktestvm1"},
+			expectedErr:           nil,
 		},
 		{
-			description:                    "AttachDisk should should do nothing if the VM cannot be found",
-			nodeName:                       types.NodeName(nonExistingNodeName),
-			testVMListWithoutInstanceView:  []compute.VirtualMachine{},
-			testVMListWithOnlyInstanceView: []compute.VirtualMachine{},
-			vmListErr:                      nil,
-			vmssFlexVMUpdateError:          nil,
-			diskMap:                        map[string]string{"diskUri1": "dataDisktestvm1"},
-			expectedErr:                    nil,
+			description:           "AttachDisk should should do nothing if the VM cannot be found",
+			nodeName:              types.NodeName(nonExistingNodeName),
+			testVM:                testVM1,
+			vmGetErr:              &retry.Error{HTTPStatusCode: http.StatusNotFound, RawError: cloudprovider.InstanceNotFound},
+			vmssFlexVMUpdateError: nil,
+			diskMap:               map[string]string{"diskUri1": "dataDisktestvm1"},
+			expectedErr:           nil,
 		},
 		{
-			description:                    "DetachDisk should should do nothing if there's a corresponding disk",
-			nodeName:                       types.NodeName(testVM1Spec.ComputerName),
-			vmName:                         testVM1Spec.VMName,
-			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
-			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
-			vmListErr:                      nil,
-			vmssFlexVMUpdateError:          nil,
-			diskMap:                        map[string]string{"diskUri1": "dataDisktestvm3"},
-			expectedErr:                    nil,
+			description:           "DetachDisk should should do nothing if there's a corresponding disk",
+			nodeName:              types.NodeName(testVM1Spec.ComputerName),
+			vmName:                testVM1Spec.VMName,
+			testVM:                testVM1,
+			vmGetErr:              nil,
+			vmssFlexVMUpdateError: nil,
+			diskMap:               map[string]string{"diskUri1": "dataDisktestvm3"},
+			expectedErr:           nil,
 		},
 		{
-			description:                    "AttachDisk should return error if update VM fails",
-			nodeName:                       types.NodeName(testVM1Spec.ComputerName),
-			vmName:                         testVM1Spec.VMName,
-			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
-			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
-			vmListErr:                      nil,
-			vmssFlexVMUpdateError:          &retry.Error{HTTPStatusCode: http.StatusNotFound, RawError: cloudprovider.InstanceNotFound},
-			diskMap:                        map[string]string{"diskUri1": "dataDisktestvm1"},
-			expectedErr:                    fmt.Errorf("Retriable: false, RetryAfter: 0s, HTTPStatusCode: 404, RawError: instance not found"),
+			description:           "AttachDisk should return error if update VM fails",
+			nodeName:              types.NodeName(testVM1Spec.ComputerName),
+			vmName:                testVM1Spec.VMName,
+			testVM:                testVM1,
+			vmGetErr:              nil,
+			vmssFlexVMUpdateError: &retry.Error{HTTPStatusCode: http.StatusNotFound, RawError: cloudprovider.InstanceNotFound},
+			diskMap:               map[string]string{"diskUri1": "dataDisktestvm1"},
+			expectedErr:           fmt.Errorf("Retriable: false, RetryAfter: 0s, HTTPStatusCode: 404, RawError: instance not found"),
 		},
 	}
 
@@ -216,8 +207,9 @@ func TestDettachDiskWithVmssFlex(t *testing.T) {
 		mockVMSSClient.EXPECT().List(gomock.Any(), gomock.Any()).Return(testVmssFlexList, nil).AnyTimes()
 
 		mockVMClient := fs.VirtualMachinesClient.(*mockvmclient.MockInterface)
-		mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), gomock.Any()).Return(tc.testVMListWithoutInstanceView, tc.vmListErr).AnyTimes()
-		mockVMClient.EXPECT().ListVmssFlexVMsWithOnlyInstanceView(gomock.Any(), gomock.Any()).Return(tc.testVMListWithOnlyInstanceView, tc.vmListErr).AnyTimes()
+		mockVMClient.EXPECT().Get(gomock.Any(), gomock.Any(), tc.vmName, gomock.Any()).Return(tc.testVM, tc.vmGetErr).AnyTimes()
+		mockVMClientV2 := fs.VirtualMachinesClientV2.(*mockvmclientv2.MockInterface)
+		mockVMClientV2.EXPECT().GetVMNameByComputerName(gomock.Any(), gomock.Any(), gomock.Any()).Return(tc.vmName, tc.vmGetErr).AnyTimes()
 
 		mockVMClient.EXPECT().Update(gomock.Any(), gomock.Any(), tc.vmName, gomock.Any(), "detach_disk").Return(nil, tc.vmssFlexVMUpdateError).AnyTimes()
 
@@ -239,34 +231,31 @@ func TestUpdateVMWithVmssFlex(t *testing.T) {
 	defer cancel()
 
 	testCases := []struct {
-		description                    string
-		nodeName                       types.NodeName
-		vmName                         string
-		testVMListWithoutInstanceView  []compute.VirtualMachine
-		testVMListWithOnlyInstanceView []compute.VirtualMachine
-		vmListErr                      error
-		vmssFlexVMUpdateError          *retry.Error
-		expectedErr                    error
+		description           string
+		nodeName              types.NodeName
+		vmName                string
+		testVM                compute.VirtualMachine
+		vmGetErr              *retry.Error
+		vmssFlexVMUpdateError *retry.Error
+		expectedErr           error
 	}{
 		{
-			description:                    "UpdateVM should work as expected if vm client update succeeds",
-			nodeName:                       types.NodeName(testVM1Spec.ComputerName),
-			vmName:                         testVM1Spec.VMName,
-			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
-			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
-			vmListErr:                      nil,
-			vmssFlexVMUpdateError:          nil,
-			expectedErr:                    nil,
+			description:           "UpdateVM should work as expected if vm client update succeeds",
+			nodeName:              types.NodeName(testVM1Spec.ComputerName),
+			vmName:                testVM1Spec.VMName,
+			testVM:                testVM1,
+			vmGetErr:              nil,
+			vmssFlexVMUpdateError: nil,
+			expectedErr:           nil,
 		},
 		{
-			description:                    "UpdateVM should return error if update VM fails",
-			nodeName:                       types.NodeName(testVM1Spec.ComputerName),
-			vmName:                         testVM1Spec.VMName,
-			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
-			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
-			vmListErr:                      nil,
-			vmssFlexVMUpdateError:          &retry.Error{HTTPStatusCode: http.StatusNotFound, RawError: cloudprovider.InstanceNotFound},
-			expectedErr:                    fmt.Errorf("Retriable: false, RetryAfter: 0s, HTTPStatusCode: 404, RawError: instance not found"),
+			description:           "UpdateVM should return error if update VM fails",
+			nodeName:              types.NodeName(testVM1Spec.ComputerName),
+			vmName:                testVM1Spec.VMName,
+			testVM:                testVM1,
+			vmGetErr:              nil,
+			vmssFlexVMUpdateError: &retry.Error{HTTPStatusCode: http.StatusNotFound, RawError: cloudprovider.InstanceNotFound},
+			expectedErr:           fmt.Errorf("Retriable: false, RetryAfter: 0s, HTTPStatusCode: 404, RawError: instance not found"),
 		},
 	}
 
@@ -278,8 +267,9 @@ func TestUpdateVMWithVmssFlex(t *testing.T) {
 		mockVMSSClient.EXPECT().List(gomock.Any(), gomock.Any()).Return(testVmssFlexList, nil).AnyTimes()
 
 		mockVMClient := fs.VirtualMachinesClient.(*mockvmclient.MockInterface)
-		mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), gomock.Any()).Return(tc.testVMListWithoutInstanceView, tc.vmListErr).AnyTimes()
-		mockVMClient.EXPECT().ListVmssFlexVMsWithOnlyInstanceView(gomock.Any(), gomock.Any()).Return(tc.testVMListWithOnlyInstanceView, tc.vmListErr).AnyTimes()
+		mockVMClient.EXPECT().Get(gomock.Any(), gomock.Any(), tc.vmName, gomock.Any()).Return(tc.testVM, tc.vmGetErr).AnyTimes()
+		mockVMClientV2 := fs.VirtualMachinesClientV2.(*mockvmclientv2.MockInterface)
+		mockVMClientV2.EXPECT().GetVMNameByComputerName(gomock.Any(), gomock.Any(), gomock.Any()).Return(tc.vmName, tc.vmGetErr).AnyTimes()
 
 		r := autorestmocks.NewResponseWithStatus("200", 200)
 		r.Request.Method = http.MethodPut
@@ -306,20 +296,20 @@ func TestGetDataDisksWithVmssFlex(t *testing.T) {
 	defer ctrl.Finish()
 
 	testCases := []struct {
-		description                    string
-		nodeName                       types.NodeName
-		testVMListWithoutInstanceView  []compute.VirtualMachine
-		testVMListWithOnlyInstanceView []compute.VirtualMachine
-		vmListErr                      error
-		expectedDataDisks              []*armcompute.DataDisk
-		expectedErr                    error
+		description       string
+		nodeName          types.NodeName
+		testVM            compute.VirtualMachine
+		vmName            string
+		vmGetErr          *retry.Error
+		expectedDataDisks []*armcompute.DataDisk
+		expectedErr       error
 	}{
 		{
-			description:                    "GetDataDisks should work as expected with managed disk",
-			nodeName:                       "vmssflex1000001",
-			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
-			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
-			vmListErr:                      nil,
+			description: "GetDataDisks should work as expected with managed disk",
+			nodeName:    "vmssflex1000001",
+			testVM:      testVM1,
+			vmName:      testVM1Spec.VMName,
+			vmGetErr:    nil,
 			expectedDataDisks: []*armcompute.DataDisk{
 				{
 					Lun:         pointer.Int32(1),
@@ -330,13 +320,12 @@ func TestGetDataDisksWithVmssFlex(t *testing.T) {
 			expectedErr: nil,
 		},
 		{
-			description:                    "GetDataDisks should should throw InstanceNotFound error if the VM cannot be found",
-			nodeName:                       types.NodeName(nonExistingNodeName),
-			testVMListWithoutInstanceView:  []compute.VirtualMachine{},
-			testVMListWithOnlyInstanceView: []compute.VirtualMachine{},
-			vmListErr:                      nil,
-			expectedDataDisks:              nil,
-			expectedErr:                    cloudprovider.InstanceNotFound,
+			description:       "GetDataDisks should should throw InstanceNotFound error if the VM cannot be found",
+			nodeName:          types.NodeName(nonExistingNodeName),
+			testVM:            compute.VirtualMachine{},
+			vmGetErr:          &retry.Error{HTTPStatusCode: http.StatusNotFound, RawError: cloudprovider.InstanceNotFound},
+			expectedDataDisks: nil,
+			expectedErr:       cloudprovider.InstanceNotFound,
 		},
 	}
 
@@ -348,8 +337,9 @@ func TestGetDataDisksWithVmssFlex(t *testing.T) {
 		mockVMSSClient.EXPECT().List(gomock.Any(), gomock.Any()).Return(testVmssFlexList, nil).AnyTimes()
 
 		mockVMClient := fs.VirtualMachinesClient.(*mockvmclient.MockInterface)
-		mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), gomock.Any()).Return(tc.testVMListWithoutInstanceView, tc.vmListErr).AnyTimes()
-		mockVMClient.EXPECT().ListVmssFlexVMsWithOnlyInstanceView(gomock.Any(), gomock.Any()).Return(tc.testVMListWithOnlyInstanceView, tc.vmListErr).AnyTimes()
+		mockVMClient.EXPECT().Get(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(tc.testVM, tc.vmGetErr).AnyTimes()
+		mockVMClientV2 := fs.VirtualMachinesClientV2.(*mockvmclientv2.MockInterface)
+		mockVMClientV2.EXPECT().GetVMNameByComputerName(gomock.Any(), gomock.Any(), gomock.Any()).Return(tc.vmName, tc.vmGetErr).AnyTimes()
 
 		dataDisks, _, err := fs.GetDataDisks(context.TODO(), tc.nodeName, azcache.CacheReadTypeDefault)
 		assert.Equal(t, tc.expectedDataDisks, dataDisks)

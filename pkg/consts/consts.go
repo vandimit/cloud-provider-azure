@@ -110,6 +110,9 @@ const (
 	// RetryAfterHeaderKey is the retry-after header key in ARM responses.
 	RetryAfterHeaderKey = "Retry-After"
 
+	// UserQuotaResetsAfterHeaderKey is the x-ms-user-quota-resets-after header key in Azure Resource Graph responses.
+	UserQuotaResetsAfterHeaderKey = "x-ms-user-quota-resets-after"
+
 	// StrRawVersion is the raw version string
 	StrRawVersion string = "raw"
 
