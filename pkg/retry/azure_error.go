@@ -116,6 +116,17 @@ func NewErrorOrNil(retriable bool, err error) *Error {
 	return NewError(retriable, err)
 }
 
+func NewErrorOrStatusCode(retriable bool, err error, statusCode int) *Error {
+	if err == nil {
+		return nil
+	}
+	return &Error{
+		Retriable:      retriable,
+		HTTPStatusCode: statusCode,
+		RawError:       err,
+	}
+}
+
 // GetRetriableError gets new retriable Error.
 func GetRetriableError(err error) *Error {
 	return &Error{

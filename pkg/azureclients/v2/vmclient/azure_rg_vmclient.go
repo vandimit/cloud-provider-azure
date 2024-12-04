@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"k8s.io/client-go/util/flowcontrol"
@@ -83,7 +84,7 @@ func (c *Client) GetVMNameByComputerName(ctx context.Context, resourceGroupName 
 	}
 
 	if result.TotalRecords == nil || *result.TotalRecords == 0 {
-		return "", retry.NewErrorOrNil(true, errors.New("no matching virtual machine found"))
+		return "", retry.NewErrorOrStatusCode(true, errors.New("no matching virtual machine found"), http.StatusNotFound)
 	}
 
 	if result.TotalRecords != nil && *result.TotalRecords > 1 {
