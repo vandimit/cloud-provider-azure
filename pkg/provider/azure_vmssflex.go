@@ -51,9 +51,9 @@ type FlexScaleSet struct {
 	*Cloud
 
 	vmssFlexCache            azcache.Resource
-	vmssFlexVMNameToVmssID   *sync.Map
+	vmssFlexNodeNameToVmssID *sync.Map
+	vmssFlexNodeNameToVMName *sync.Map
 	vmssFlexVMNameToNodeName *sync.Map
-	vmssFlexVMCache          azcache.Resource
 
 	// lockMap in cache refresh
 	lockMap *lockmap.LockMap
@@ -68,18 +68,14 @@ func (fs *FlexScaleSet) RefreshCaches() error {
 		logger.Error(err, "failed to create or refresh vmssFlexCache")
 		return err
 	}
-	fs.vmssFlexVMCache, err = fs.newVmssFlexVMCache()
-	if err != nil {
-		logger.Error(err, "failed to create or refresh vmssFlexVMCache")
-		return err
-	}
 	return nil
 }
 
 func newFlexScaleSet(az *Cloud) (VMSet, error) {
 	fs := &FlexScaleSet{
 		Cloud:                    az,
-		vmssFlexVMNameToVmssID:   &sync.Map{},
+		vmssFlexNodeNameToVmssID: &sync.Map{},
+		vmssFlexNodeNameToVMName: &sync.Map{},
 		vmssFlexVMNameToNodeName: &sync.Map{},
 		lockMap:                  lockmap.NewLockMap(),
 	}

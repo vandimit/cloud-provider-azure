@@ -18,6 +18,7 @@ package provider
 
 import (
 	"context"
+	mockvmclientv2 "sigs.k8s.io/cloud-provider-azure/pkg/azureclients/v2/vmclient/mockvmclient"
 	"time"
 
 	"go.uber.org/mock/gomock"
@@ -122,6 +123,7 @@ func GetTestCloud(ctrl *gomock.Controller) (az *Cloud) {
 	az.VirtualMachineScaleSetsClient = mockvmssclient.NewMockInterface(ctrl)
 	az.VirtualMachineScaleSetVMsClient = mockvmssvmclient.NewMockInterface(ctrl)
 	az.VirtualMachinesClient = mockvmclient.NewMockInterface(ctrl)
+	az.VirtualMachinesClientV2 = mockvmclientv2.NewMockInterface(ctrl)
 	clientFactory := mock_azclient.NewMockClientFactory(ctrl)
 	az.ComputeClientFactory = clientFactory
 	az.NetworkClientFactory = clientFactory

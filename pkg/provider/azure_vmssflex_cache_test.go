@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	mockvmclientv2 "sigs.k8s.io/cloud-provider-azure/pkg/azureclients/v2/vmclient/mockvmclient"
 	"testing"
 
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
@@ -57,6 +58,8 @@ var (
 	}
 	testVMWithoutInstanceView1 = generateVmssFlexTestVMWithoutInstanceView(testVM1Spec)
 	testVM1                    = generateVmssFlexTestVM(testVM1Spec)
+	testVM2                    = generateVmssFlexTestVM(testVM2Spec)
+	testVM3                    = generateVmssFlexTestVM(testVM3Spec)
 
 	testVM2Spec = VmssFlexTestVMSpec{
 		VMName:              "testvm2",
@@ -73,8 +76,6 @@ var (
 		},
 		NicID: "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/networkInterfaces/testvm2-nic",
 	}
-	testVMWithoutInstanceView2  = generateVmssFlexTestVMWithoutInstanceView(testVM2Spec)
-	testVMWithOnlyInstanceView2 = generateVmssFlexTestVMWithOnlyInstanceView(testVM2Spec)
 
 	testVM3Spec = VmssFlexTestVMSpec{
 		VMName:              "testvm3",
@@ -232,15 +233,17 @@ func TestGetNodeNameByVMName(t *testing.T) {
 	testCases := []struct {
 		description                    string
 		vmName                         string
+		testVM                         compute.VirtualMachine
 		testVMListWithoutInstanceView  []compute.VirtualMachine
 		testVMListWithOnlyInstanceView []compute.VirtualMachine
-		vmListErr                      error
+		vmListErr                      *retry.Error
 		expectedNodeName               string
 		expectedErr                    error
 	}{
 		{
 			description:                    "getNodeNameByVMName should return the nodeName of the corresponding vm by the vm name",
 			vmName:                         "testvm1",
+			testVM:                         testVM1,
 			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
 			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
 			vmListErr:                      nil,
@@ -250,11 +253,15 @@ func TestGetNodeNameByVMName(t *testing.T) {
 		{
 			description:                    "getNodeVmssFlexID should throw InstanceNotFound error if the VM cannot be found",
 			vmName:                         nonExistingNodeName,
+			testVM:                         compute.VirtualMachine{},
 			testVMListWithoutInstanceView:  []compute.VirtualMachine{},
 			testVMListWithOnlyInstanceView: []compute.VirtualMachine{},
-			vmListErr:                      nil,
-			expectedNodeName:               "",
-			expectedErr:                    cloudprovider.InstanceNotFound,
+			vmListErr: &retry.Error{
+				HTTPStatusCode: http.StatusNotFound,
+				RawError:       cloudprovider.InstanceNotFound,
+			},
+			expectedNodeName: "",
+			expectedErr:      cloudprovider.InstanceNotFound,
 		},
 	}
 
@@ -266,6 +273,7 @@ func TestGetNodeNameByVMName(t *testing.T) {
 		mockVMSSClient.EXPECT().List(gomock.Any(), gomock.Any()).Return(testVmssFlexList, nil).AnyTimes()
 
 		mockVMClient := fs.VirtualMachinesClient.(*mockvmclient.MockInterface)
+		mockVMClient.EXPECT().Get(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(tc.testVM, tc.vmListErr).AnyTimes()
 		mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), gomock.Any()).Return(tc.testVMListWithoutInstanceView, tc.vmListErr).AnyTimes()
 		mockVMClient.EXPECT().ListVmssFlexVMsWithOnlyInstanceView(gomock.Any(), gomock.Any()).Return(tc.testVMListWithOnlyInstanceView, tc.vmListErr).AnyTimes()
 
@@ -280,31 +288,30 @@ func TestGetNodeVmssFlexID(t *testing.T) {
 	defer ctrl.Finish()
 
 	testCases := []struct {
-		description                    string
-		nodeName                       string
-		testVMListWithoutInstanceView  []compute.VirtualMachine
-		testVMListWithOnlyInstanceView []compute.VirtualMachine
-		vmListErr                      error
-		expectedVmssFlexID             string
-		expectedErr                    error
+		description        string
+		nodeName           string
+		testVM             compute.VirtualMachine
+		vmName             string
+		vmGetErr           *retry.Error
+		expectedVmssFlexID string
+		expectedErr        error
 	}{
 		{
-			description:                    "getNodeVmssFlexID should return the VmssFlex ID that the node belongs to",
-			nodeName:                       "vmssflex1000001",
-			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
-			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
-			vmListErr:                      nil,
-			expectedVmssFlexID:             "subscriptions/sub/resourceGroups/rg/providers/Microsoft.Compute/virtualMachineScaleSets/vmssflex1",
-			expectedErr:                    nil,
+			description:        "getNodeVmssFlexID should return the VmssFlex ID that the node belongs to",
+			nodeName:           "vmssflex1000001",
+			testVM:             testVM1,
+			vmName:             testVM1Spec.VMName,
+			vmGetErr:           nil,
+			expectedVmssFlexID: "subscriptions/sub/resourceGroups/rg/providers/Microsoft.Compute/virtualMachineScaleSets/vmssflex1",
+			expectedErr:        nil,
 		},
 		{
-			description:                    "getNodeVmssFlexID should throw InstanceNotFound error if the VM cannot be found",
-			nodeName:                       "NonExistingNodeName",
-			testVMListWithoutInstanceView:  []compute.VirtualMachine{},
-			testVMListWithOnlyInstanceView: []compute.VirtualMachine{},
-			vmListErr:                      nil,
-			expectedVmssFlexID:             "",
-			expectedErr:                    cloudprovider.InstanceNotFound,
+			description:        "getNodeVmssFlexID should throw InstanceNotFound error if the VM cannot be found",
+			nodeName:           "NonExistingNodeName",
+			testVM:             compute.VirtualMachine{},
+			vmGetErr:           &retry.Error{HTTPStatusCode: http.StatusNotFound, RawError: cloudprovider.InstanceNotFound},
+			expectedVmssFlexID: "",
+			expectedErr:        cloudprovider.InstanceNotFound,
 		},
 	}
 
@@ -316,8 +323,9 @@ func TestGetNodeVmssFlexID(t *testing.T) {
 		mockVMSSClient.EXPECT().List(gomock.Any(), gomock.Any()).Return(testVmssFlexList, nil).AnyTimes()
 
 		mockVMClient := fs.VirtualMachinesClient.(*mockvmclient.MockInterface)
-		mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), gomock.Any()).Return(tc.testVMListWithoutInstanceView, tc.vmListErr).AnyTimes()
-		mockVMClient.EXPECT().ListVmssFlexVMsWithOnlyInstanceView(gomock.Any(), gomock.Any()).Return(tc.testVMListWithOnlyInstanceView, tc.vmListErr).AnyTimes()
+		mockVMClient.EXPECT().Get(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(tc.testVM, tc.vmGetErr).AnyTimes()
+		mockVMClientV2 := fs.VirtualMachinesClientV2.(*mockvmclientv2.MockInterface)
+		mockVMClientV2.EXPECT().GetVMNameByComputerName(gomock.Any(), gomock.Any(), gomock.Any()).Return(tc.vmName, tc.vmGetErr).AnyTimes()
 
 		vmssFlexID, err := fs.getNodeVmssFlexID(context.TODO(), tc.nodeName)
 		assert.Equal(t, tc.expectedErr, err, tc.description)
@@ -329,48 +337,30 @@ func TestGetVmssFlexVM(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	testCases := []struct {
-		description                    string
-		nodeName                       string
-		testVM                         compute.VirtualMachine
-		vmGetErr                       *retry.Error
-		testVMListWithoutInstanceView  []compute.VirtualMachine
-		testVMListWithOnlyInstanceView []compute.VirtualMachine
-		vmListErr                      error
-		expectedVmssFlexVM             compute.VirtualMachine
-		expectedErr                    error
+		description        string
+		nodeName           string
+		testVM             compute.VirtualMachine
+		vmName             string
+		vmGetErr           *retry.Error
+		expectedVmssFlexVM compute.VirtualMachine
+		expectedErr        error
 	}{
 		{
-			description:                    "getVmssFlexVM should return the VmssFlex VM",
-			nodeName:                       "vmssflex1000001",
-			testVM:                         testVMWithoutInstanceView1,
-			vmGetErr:                       nil,
-			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
-			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
-			vmListErr:                      nil,
-			expectedVmssFlexVM:             testVM1,
-			expectedErr:                    nil,
+			description:        "getVmssFlexVM should return the VmssFlex VM",
+			nodeName:           "vmssflex1000001",
+			testVM:             testVM1,
+			vmName:             testVM1Spec.VMName,
+			vmGetErr:           nil,
+			expectedVmssFlexVM: testVM1,
+			expectedErr:        nil,
 		},
 		{
-			description:                    "getVmssFlexVM should throw InstanceNotFound error if the VM cannot be found",
-			nodeName:                       "vmssflex1000001",
-			testVM:                         compute.VirtualMachine{},
-			vmGetErr:                       &retry.Error{HTTPStatusCode: http.StatusNotFound},
-			testVMListWithoutInstanceView:  []compute.VirtualMachine{},
-			testVMListWithOnlyInstanceView: []compute.VirtualMachine{},
-			vmListErr:                      nil,
-			expectedVmssFlexVM:             compute.VirtualMachine{},
-			expectedErr:                    cloudprovider.InstanceNotFound,
-		},
-		{
-			description:                    "getVmssFlexVM should throw InstanceNotFound error if the VM is removed from VMSS Flex",
-			nodeName:                       "vmssflex1000001",
-			testVM:                         testVMWithoutInstanceView1,
-			vmGetErr:                       nil,
-			testVMListWithoutInstanceView:  []compute.VirtualMachine{testVMWithoutInstanceView2},
-			testVMListWithOnlyInstanceView: []compute.VirtualMachine{testVMWithOnlyInstanceView2},
-			vmListErr:                      nil,
-			expectedVmssFlexVM:             compute.VirtualMachine{},
-			expectedErr:                    cloudprovider.InstanceNotFound,
+			description:        "getVmssFlexVM should throw InstanceNotFound error if the VM cannot be found",
+			nodeName:           nonExistingNodeName,
+			testVM:             compute.VirtualMachine{},
+			vmGetErr:           &retry.Error{HTTPStatusCode: http.StatusNotFound},
+			expectedVmssFlexVM: compute.VirtualMachine{},
+			expectedErr:        cloudprovider.InstanceNotFound,
 		},
 	}
 
@@ -378,12 +368,10 @@ func TestGetVmssFlexVM(t *testing.T) {
 		fs, err := NewTestFlexScaleSet(ctrl)
 		assert.NoError(t, err, "unexpected error when creating test FlexScaleSet")
 
-		mockVMSSClient := fs.VirtualMachineScaleSetsClient.(*mockvmssclient.MockInterface)
-		mockVMSSClient.EXPECT().List(gomock.Any(), gomock.Any()).Return(testVmssFlexList, nil).AnyTimes()
-
 		mockVMClient := fs.VirtualMachinesClient.(*mockvmclient.MockInterface)
-		mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), gomock.Any()).Return(tc.testVMListWithoutInstanceView, tc.vmListErr).AnyTimes()
-		mockVMClient.EXPECT().ListVmssFlexVMsWithOnlyInstanceView(gomock.Any(), gomock.Any()).Return(tc.testVMListWithOnlyInstanceView, tc.vmListErr).AnyTimes()
+		mockVMClient.EXPECT().Get(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(tc.testVM, tc.vmGetErr).AnyTimes()
+		mockVMClientV2 := fs.VirtualMachinesClientV2.(*mockvmclientv2.MockInterface)
+		mockVMClientV2.EXPECT().GetVMNameByComputerName(gomock.Any(), gomock.Any(), gomock.Any()).Return(tc.vmName, tc.vmGetErr).AnyTimes()
 
 		vmssFlexVM, err := fs.getVmssFlexVM(context.TODO(), tc.nodeName, azcache.CacheReadTypeDefault)
 		assert.Equal(t, tc.expectedErr, err, tc.description)
@@ -560,30 +548,26 @@ func TestGetVmssFlexByNodeName(t *testing.T) {
 	defer ctrl.Finish()
 
 	testCases := []struct {
-		description                    string
-		nodeName                       string
-		testVM                         compute.VirtualMachine
-		vmGetErr                       *retry.Error
-		testVMListWithoutInstanceView  []compute.VirtualMachine
-		testVMListWithOnlyInstanceView []compute.VirtualMachine
-		vmListErr                      error
-		testVmssFlexList               []compute.VirtualMachineScaleSet
-		vmssFlexListErr                *retry.Error
-		expectedVmssFlex               *compute.VirtualMachineScaleSet
-		expectedErr                    error
+		description      string
+		nodeName         string
+		testVM           compute.VirtualMachine
+		vmName           string
+		vmGetErr         *retry.Error
+		testVmssFlexList []compute.VirtualMachineScaleSet
+		vmssFlexListErr  *retry.Error
+		expectedVmssFlex *compute.VirtualMachineScaleSet
+		expectedErr      error
 	}{
 		{
-			description:                    "getVmssFlexByName should return the VmssFlex ID that the node belongs to",
-			nodeName:                       "vmssflex1000001",
-			testVM:                         testVMWithoutInstanceView1,
-			vmGetErr:                       nil,
-			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
-			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
-			vmListErr:                      nil,
-			testVmssFlexList:               testVmssFlexList,
-			vmssFlexListErr:                nil,
-			expectedVmssFlex:               &testVmssFlex1,
-			expectedErr:                    nil,
+			description:      "getVmssFlexByName should return the VmssFlex ID that the node belongs to",
+			nodeName:         "vmssflex1000001",
+			testVM:           testVMWithoutInstanceView1,
+			vmName:           testVM1Spec.VMName,
+			vmGetErr:         nil,
+			testVmssFlexList: testVmssFlexList,
+			vmssFlexListErr:  nil,
+			expectedVmssFlex: &testVmssFlex1,
+			expectedErr:      nil,
 		},
 	}
 
@@ -592,9 +576,9 @@ func TestGetVmssFlexByNodeName(t *testing.T) {
 		assert.NoError(t, err, "unexpected error when creating test FlexScaleSet")
 
 		mockVMClient := fs.VirtualMachinesClient.(*mockvmclient.MockInterface)
-		mockVMClient.EXPECT().Get(gomock.Any(), fs.ResourceGroup, tc.nodeName, gomock.Any()).Return(tc.testVM, tc.vmGetErr).AnyTimes()
-		mockVMClient.EXPECT().ListVmssFlexVMsWithoutInstanceView(gomock.Any(), gomock.Any()).Return(tc.testVMListWithoutInstanceView, tc.vmListErr).AnyTimes()
-		mockVMClient.EXPECT().ListVmssFlexVMsWithOnlyInstanceView(gomock.Any(), gomock.Any()).Return(tc.testVMListWithOnlyInstanceView, tc.vmListErr).AnyTimes()
+		mockVMClient.EXPECT().Get(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(tc.testVM, tc.vmGetErr).AnyTimes()
+		mockVMClientV2 := fs.VirtualMachinesClientV2.(*mockvmclientv2.MockInterface)
+		mockVMClientV2.EXPECT().GetVMNameByComputerName(gomock.Any(), gomock.Any(), gomock.Any()).Return(tc.vmName, tc.vmGetErr).AnyTimes()
 		mockVMSSClient := fs.VirtualMachineScaleSetsClient.(*mockvmssclient.MockInterface)
 		mockVMSSClient.EXPECT().List(gomock.Any(), gomock.Any()).Return(tc.testVmssFlexList, tc.vmssFlexListErr).AnyTimes()
 

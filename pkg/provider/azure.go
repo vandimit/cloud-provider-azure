@@ -23,6 +23,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	vmclientv2 "sigs.k8s.io/cloud-provider-azure/pkg/azureclients/v2/vmclient"
 	"strings"
 	"sync"
 	"time"
@@ -325,6 +326,7 @@ type Cloud struct {
 	PublicIPAddressesClient         publicipclient.Interface
 	SecurityGroupsClient            securitygroupclient.Interface
 	VirtualMachinesClient           vmclient.Interface
+	VirtualMachinesClientV2         vmclientv2.Interface
 	StorageAccountClient            storageaccountclient.Interface
 	DisksClient                     diskclient.Interface
 	FileClient                      fileclient.Interface
@@ -997,6 +999,7 @@ func (az *Cloud) configAzureClients(
 	az.StorageAccountClient = storageaccountclient.New(storageAccountClientConfig)
 	az.DisksClient = diskclient.New(diskClientConfig)
 	az.VirtualMachinesClient = vmclient.New(vmClientConfig)
+	az.VirtualMachinesClientV2 = vmclientv2.New(vmClientConfig)
 	az.VirtualMachineScaleSetsClient = vmssclient.New(vmssClientConfig)
 	az.VirtualMachineScaleSetVMsClient = vmssvmclient.New(vmssVMClientConfig)
 	az.SubnetsClient = subnetclient.New(subnetClientConfig)

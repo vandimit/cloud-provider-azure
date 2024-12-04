@@ -116,6 +116,17 @@ func NewErrorOrNil(retriable bool, err error) *Error {
 	return NewError(retriable, err)
 }
 
+func NewErrorOrStatusCode(retriable bool, err error, statusCode int) *Error {
+	if err == nil {
+		return nil
+	}
+	return &Error{
+		Retriable:      retriable,
+		HTTPStatusCode: statusCode,
+		RawError:       err,
+	}
+}
+
 // GetRetriableError gets new retriable Error.
 func GetRetriableError(err error) *Error {
 	return &Error{
@@ -246,10 +257,16 @@ func getRetryAfter(resp *http.Response) time.Duration {
 		return 0
 	}
 
+	if userQuotaReset := resp.Header.Get(consts.UserQuotaResetsAfterHeaderKey); userQuotaReset != "" {
+		ra = userQuotaReset
+	}
+
 	var dur time.Duration
 	if retryAfter, _ := strconv.Atoi(ra); retryAfter > 0 {
 		dur = time.Duration(retryAfter) * time.Second
 	} else if t, err := time.Parse(time.RFC1123, ra); err == nil {
+		dur = t.Sub(now())
+	} else if t, err := time.Parse(time.TimeOnly, ra); err == nil {
 		dur = t.Sub(now())
 	}
 	return dur

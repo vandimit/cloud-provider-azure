@@ -19,16 +19,14 @@ package provider
 import (
 	"context"
 	"fmt"
-	"net/http"
-	"strings"
-	"sync"
-
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v6"
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
 	"github.com/Azure/go-autorest/autorest/azure"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/pointer"
+	"net/http"
+	"strings"
 
 	azcache "sigs.k8s.io/cloud-provider-azure/pkg/cache"
 	"sigs.k8s.io/cloud-provider-azure/pkg/consts"
@@ -124,7 +122,7 @@ func (fs *FlexScaleSet) AttachDisk(ctx context.Context, nodeName types.NodeName,
 // DetachDisk detaches a disk from VM
 func (fs *FlexScaleSet) DetachDisk(ctx context.Context, nodeName types.NodeName, diskMap map[string]string, forceDetach bool) error {
 	vmName := mapNodeNameToVMName(nodeName)
-	vm, err := fs.getVmssFlexVM(ctx, vmName, azcache.CacheReadTypeDefault)
+	vm, err := fs.getVmssFlexVM(ctx, vmName, azcache.CacheReadTypeForceRefresh)
 	if err != nil {
 		// if host doesn't exist, no need to detach
 		klog.Warningf("azureDisk - cannot find node %s, skip detaching disk list(%s)", nodeName, diskMap)
@@ -280,23 +278,12 @@ func (fs *FlexScaleSet) updateCache(ctx context.Context, nodeName string, vm *co
 		return fmt.Errorf("vm.OsProfile.ComputerName is nil")
 	}
 
-	vmssFlexID, err := fs.getNodeVmssFlexID(ctx, nodeName)
-	if err != nil {
-		return err
+	if vm.VirtualMachineScaleSet == nil || vm.VirtualMachineScaleSet.ID == nil {
+		return fmt.Errorf("vm.VirtualMachineScaleSet.ID is nil")
 	}
 
-	fs.lockMap.LockEntry(vmssFlexID)
-	defer fs.lockMap.UnlockEntry(vmssFlexID)
-	cached, err := fs.vmssFlexVMCache.Get(ctx, vmssFlexID, azcache.CacheReadTypeDefault)
-	if err != nil {
-		return err
-	}
-	vmMap := cached.(*sync.Map)
-	vmMap.Store(nodeName, vm)
-
-	fs.vmssFlexVMNameToVmssID.Store(strings.ToLower(*vm.OsProfile.ComputerName), vmssFlexID)
-	fs.vmssFlexVMNameToNodeName.Store(*vm.Name, strings.ToLower(*vm.OsProfile.ComputerName))
-	klog.V(2).Infof("updateCache(%s) for vmssFlexID(%s) successfully", nodeName, vmssFlexID)
+	fs.cacheVirtualMachine(ctx, *vm)
+	klog.V(2).Infof("updateCache(%s) successfully", nodeName)
 	return nil
 }
 
